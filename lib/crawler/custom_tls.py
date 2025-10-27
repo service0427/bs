@@ -163,8 +163,17 @@ class CustomTLSCrawler:
 
         print(f"  ✓ TLS 정보: 로드 완료")
 
-        tls_data = tls.get('tls', {})
-        http2_data = tls.get('http2', {})
+        # browserleaks 형식과 peet.ws 형식 모두 지원
+        # peet.ws: data['tls'] = {'tls': {...}, 'http2': {...}}
+        # browserleaks: data['tls'] = {...}, data['http2'] = {...}
+        if 'ja3' in tls:
+            # browserleaks 형식: tls가 바로 TLS 데이터
+            tls_data = tls
+            http2_data = data.get('http2', {})
+        else:
+            # peet.ws 형식: tls 안에 tls/http2가 중첩
+            tls_data = tls.get('tls', tls)
+            http2_data = tls.get('http2', {})
 
         print(f"  ✓ JA3 Hash: {tls_data.get('ja3_hash', 'N/A')}")
         print(f"  ✓ Cipher Suites: {len(tls_data.get('ciphers', []))}개")
