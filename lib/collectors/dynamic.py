@@ -363,76 +363,100 @@ class DynamicCollector:
             # 2. TLS 정보 수집
             print(f"\n[{self.device_name}] Step 1: TLS 정보 수집")
 
-            print(f"[{self.device_name}] 🔄 https://tls.peet.ws/api/all 접속 중...")
+            print(f"[{self.device_name}] 🔄 https://tls.browserleaks.com/ 접속 중...")
 
             tls_start = time.time()
-            self.driver.get('https://tls.peet.ws/api/all')
+            self.driver.get('https://tls.browserleaks.com/')
             print(f"[{self.device_name}] ✓ 페이지 로드 완료 ({time.time() - tls_start:.1f}초)")
 
             print(f"[{self.device_name}] 🔄 TLS 데이터 파싱 중 (5초 대기)...")
-            time.sleep(5)  # 충분한 로딩 대기
+            time.sleep(5)  # 페이지 렌더링 대기
 
             # TLS 정보 추출
             tls_info = {}
+            browserleaks_raw = None
             try:
-                page_source = self.driver.page_source
                 print(f"[{self.device_name}] 🔄 JSON 추출 시도 중...")
-                # JSON 파싱 (여러 방식 시도)
-                import re
-                json_text = None
 
-                # 방법 1: <pre> 태그 (소문자)
-                json_match = re.search(r'<pre[^>]*>(.*?)</pre>', page_source, re.DOTALL | re.IGNORECASE)
-                if json_match:
-                    json_text = json_match.group(1).strip()
-                    print(f"[{self.device_name}]   JSON 발견: <pre> 태그")
+                # 방법 1: JavaScript 변수에서 추출 (가장 정확)
+                try:
+                    # window 객체나 특정 변수에 데이터가 있을 수 있음
+                    browserleaks_raw = self.driver.execute_script("""
+                        // 여러 가능성 시도
+                        if (typeof tlsData !== 'undefined') return tlsData;
+                        if (typeof data !== 'undefined') return data;
+                        // /json API 직접 호출
+                        try {
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('GET', '/json', false);
+                            xhr.send();
+                            return JSON.parse(xhr.responseText);
+                        } catch(e) {
+                            return null;
+                        }
+                    """)
+                    if browserleaks_raw:
+                        print(f"[{self.device_name}]   JSON 발견: JavaScript 변수")
+                except Exception as js_err:
+                    print(f"[{self.device_name}]   JavaScript 추출 실패: {js_err}")
 
-                # 방법 2: <body> 태그
-                if not json_text:
-                    json_match = re.search(r'<body[^>]*>(.*?)</body>', page_source, re.DOTALL | re.IGNORECASE)
+                # 방법 2: 페이지 소스에서 JSON 추출
+                if not browserleaks_raw:
+                    page_source = self.driver.page_source
+                    import re
+
+                    # JSON 객체 패턴 찾기
+                    json_match = re.search(r'\{[^{}]*"ja3_hash"[^{}]*"ja3_text"[^{}]*"akamai_text"[^{}]*\}', page_source, re.DOTALL)
                     if json_match:
-                        json_text = json_match.group(1).strip()
-                        print(f"[{self.device_name}]   JSON 발견: <body> 태그")
+                        import html
+                        json_text = html.unescape(json_match.group(0))
+                        browserleaks_raw = json.loads(json_text)
+                        print(f"[{self.device_name}]   JSON 발견: 페이지 소스")
 
-                # 방법 3: 전체 page_source에서 JSON 객체 찾기
-                if not json_text:
-                    json_match = re.search(r'\{.*"tls".*\}', page_source, re.DOTALL)
-                    if json_match:
-                        json_text = json_match.group(0).strip()
-                        print(f"[{self.device_name}]   JSON 발견: 정규식 매칭")
+                if browserleaks_raw:
+                    # browserleaks 원본 데이터를 peet.ws 형식으로 변환
+                    if 'ja3_text' in browserleaks_raw:
+                        # JA3 문자열 파싱
+                        ja3_parts = browserleaks_raw['ja3_text'].split(',')
 
-                if json_text:
-                    # HTML entities 디코딩
-                    import html
-                    json_text = html.unescape(json_text)
+                        # cipher_suites 배열이 있으면 사용, 없으면 JA3에서 추출
+                        ciphers = browserleaks_raw.get('cipher_suites', [])
+                        if not ciphers and len(ja3_parts) > 1:
+                            ciphers = ja3_parts[1].split('-')
 
-                    # JSON 파싱
-                    tls_json = json.loads(json_text)
-                    tls_info = tls_json
+                        # extensions 배열이 있으면 사용, 없으면 JA3에서 추출
+                        extensions = browserleaks_raw.get('extensions', [])
+                        if not extensions and len(ja3_parts) > 2:
+                            extensions = ja3_parts[2].split('-')
 
-                    # TLS 정보 검증 (필수 필드 확인)
-                    if not tls_info.get('tls') or not tls_info.get('tls', {}).get('ciphers'):
-                        print(f"[{self.device_name}] ❌ TLS 정보 비정상: 필수 필드 누락")
-                        print(f"[{self.device_name}]    TLS 수집 실패 - 크롤링 불가")
-                        tls_info = {}
-                    else:
-                        cipher_count = len(tls_info['tls']['ciphers'])
+                        tls_info = {
+                            'tls': {
+                                'ja3': browserleaks_raw['ja3_text'],
+                                'ja3_hash': browserleaks_raw.get('ja3_hash', ''),
+                                'ciphers': ciphers,
+                                'extensions': extensions
+                            },
+                            'http2': {
+                                'akamai_fingerprint': browserleaks_raw.get('akamai_text', '')
+                            },
+                            'http_version': 'h2',
+                            'user_agent': browserleaks_raw.get('user_agent', ''),
+                            'browserleaks_raw': browserleaks_raw  # 원본 데이터 보존
+                        }
+
                         print(f"[{self.device_name}] ✓ TLS 정보 수집 완료")
-                        print(f"[{self.device_name}]   Ciphers: {cipher_count}개")
-                        if 'ja3_hash' in tls_info.get('tls', {}):
-                            print(f"[{self.device_name}]   JA3: {tls_info['tls']['ja3_hash']}")
-                        if 'http_version' in tls_info:
-                            print(f"[{self.device_name}]   HTTP Version: {tls_info['http_version']}")
+                        print(f"[{self.device_name}]   Ciphers: {len(tls_info['tls']['ciphers'])}개")
+                        print(f"[{self.device_name}]   JA3: {tls_info['tls']['ja3_hash']}")
+                        print(f"[{self.device_name}]   HTTP Version: {tls_info['http_version']}")
+                    else:
+                        print(f"[{self.device_name}] ❌ TLS 정보 비정상: ja3_text 필드 누락")
+                        tls_info = {}
                 else:
-                    print(f"[{self.device_name}] ❌ TLS 페이지에서 JSON을 찾을 수 없음")
-                    print(f"[{self.device_name}]    응답 길이: {len(page_source)} bytes")
-                    print(f"[{self.device_name}]    응답 미리보기 (처음 200자):")
-                    print(f"[{self.device_name}]    {page_source[:200]}")
+                    print(f"[{self.device_name}] ❌ TLS 데이터를 찾을 수 없음")
+                    tls_info = {}
+
             except json.JSONDecodeError as e:
                 print(f"[{self.device_name}] ❌ JSON 파싱 실패: {e}")
-                print(f"[{self.device_name}]    JSON 텍스트 미리보기 (처음 200자):")
-                if json_text:
-                    print(f"[{self.device_name}]    {json_text[:200]}")
                 tls_info = {}
             except Exception as e:
                 print(f"[{self.device_name}] ❌ TLS 정보 파싱 실패: {e}")
