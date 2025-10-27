@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# BrowserStack
+browserstack-local
+BrowserStackLocal*
+.browserstack/
+
+# 민감한 정보
+*.key
+*.pem
+*.env
+.env
+credentials.json
+config.json
+*_credentials.json
+*_config.json
+
+# 데이터 파일
+data/
+lib/data/
+*.db
+*.sqlite
+*.log
+*.csv
+search_history*.json
+
+# 임시 파일
+*.tmp
+*.temp
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# VPN 설정 (민감)
+vpn/
+/etc/wireguard/
+*.conf
+
+# 백업
+backup/
+*.backup
+route_backup.txt
+rule_backup.txt
+
+# 체크포인트
+checkpoints/
+*.checkpoint
+
+# Node modules (혹시 있을 경우)
+node_modules/
+
+# 테스트 결과
+test_results/
+*.test.log

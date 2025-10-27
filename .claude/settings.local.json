@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:curl-cffi.readthedocs.io)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:tls.browserleaks.com)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
