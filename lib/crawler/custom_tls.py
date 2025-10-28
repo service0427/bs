@@ -175,8 +175,10 @@ class CustomTLSCrawler:
             tls_data = tls.get('tls', tls)
             http2_data = tls.get('http2', {})
 
+        # cipher_suites (full format) 또는 ciphers (minimal format)
+        cipher_list = tls_data.get('cipher_suites', tls_data.get('ciphers', []))
         print(f"  ✓ JA3 Hash: {tls_data.get('ja3_hash', 'N/A')}")
-        print(f"  ✓ Cipher Suites: {len(tls_data.get('ciphers', []))}개")
+        print(f"  ✓ Cipher Suites: {len(cipher_list)}개")
         print()
 
         # 2. JA3 / Akamai / extra_fp 추출
@@ -195,45 +197,73 @@ class CustomTLSCrawler:
         extra_fp = {}
 
         # 1) TLS GREASE 감지 (Chrome 필수!)
-        ciphers = tls_data.get('ciphers', [])
-        has_grease = any('GREASE' in cipher or '0x' in cipher for cipher in ciphers)
+        # cipher 형식 확인: 객체 배열 vs ID 문자열 배열
+        has_grease = False
+        if cipher_list:
+            if isinstance(cipher_list[0], dict):
+                # Full format: {"id": 10794, "name": "GREASE"}
+                has_grease = any('GREASE' in c.get('name', '') for c in cipher_list)
+            else:
+                # Minimal format: ["4865", "4866", ...]
+                has_grease = any('GREASE' in str(c) or '0x' in str(c) for c in cipher_list)
+
         if has_grease:
             extra_fp['tls_grease'] = True
             print(f"  ✓ TLS GREASE: 활성화 (Chrome 특징)")
 
         # 2) signature_algorithms 추출
         extensions = tls_data.get('extensions', [])
-        for ext in extensions:
-            if 'signature_algorithms' in ext:
-                extra_fp['tls_signature_algorithms'] = ext['signature_algorithms']
-                print(f"  ✓ Signature Algorithms: {len(ext['signature_algorithms'])}개")
-                break
 
-        # 3) 인증서 압축 추출 (compress_certificate)
-        for ext in extensions:
-            if 'compress_certificate' in ext:
-                algorithms = ext['compress_certificate'].get('algorithms', [])
-                if algorithms:
-                    # "brotli (2)" → "brotli" 추출
-                    algo_str = algorithms[0]
-                    if isinstance(algo_str, str):
-                        algo = algo_str.split()[0].lower()
-                        extra_fp['tls_cert_compression'] = algo
-                        print(f"  ✓ Certificate Compression: {algo}")
-                break
+        # extensions 형식 확인: 객체 배열 vs ID 문자열 배열
+        has_extension_objects = (extensions and
+                                isinstance(extensions, list) and
+                                len(extensions) > 0 and
+                                isinstance(extensions[0], dict))
 
-        # 4) TLS 최소 버전 추출 (supported_versions)
-        for ext in extensions:
-            if 'supported_versions' in ext:
-                versions = ext['supported_versions'].get('versions', [])
-                if versions:
-                    # GREASE 제외하고 가장 낮은 버전 찾기
-                    real_versions = [v for v in versions if 'GREASE' not in v]
-                    if 'TLS 1.2' in real_versions:
-                        # TLSv1.2를 최소 버전으로 설정 (curl_cffi의 CurlSslVersion.TLSv1_2 = 4)
-                        extra_fp['tls_min_version'] = 4
-                        print(f"  ✓ TLS Min Version: TLSv1.2")
-                break
+        if has_extension_objects:
+            # Full structure: extension 객체 배열 (browserleaks full format)
+            for ext in extensions:
+                ext_name = ext.get('name', '')
+                ext_data = ext.get('data', {})
+
+                # signature_algorithms
+                if ext_name == 'signature_algorithms':
+                    algorithms = ext_data.get('algorithms', [])
+                    if algorithms:
+                        # 알고리즘 ID 리스트 추출
+                        algo_ids = [str(a.get('id', a)) if isinstance(a, dict) else str(a) for a in algorithms]
+                        extra_fp['tls_signature_algorithms'] = algo_ids
+                        print(f"  ✓ Signature Algorithms: {len(algo_ids)}개")
+
+                # compress_certificate
+                elif ext_name == 'compress_certificate':
+                    algorithms = ext_data.get('algorithms', [])
+                    if algorithms:
+                        # 첫 번째 알고리즘 이름 추출
+                        algo = algorithms[0]
+                        if isinstance(algo, dict):
+                            algo_name = algo.get('name', '').lower()
+                        else:
+                            algo_name = str(algo).split()[0].lower()
+                        if algo_name:
+                            extra_fp['tls_cert_compression'] = algo_name
+                            print(f"  ✓ Certificate Compression: {algo_name}")
+
+                # supported_versions
+                elif ext_name == 'supported_versions':
+                    versions = ext_data.get('supported_versions', [])
+                    if versions:
+                        # GREASE 제외하고 실제 버전 확인
+                        real_versions = [v.get('name', v) if isinstance(v, dict) else v
+                                       for v in versions
+                                       if 'GREASE' not in str(v)]
+                        if any('TLS 1.2' in str(v) for v in real_versions):
+                            extra_fp['tls_min_version'] = 4  # CurlSslVersion.TLSv1_2
+                            print(f"  ✓ TLS Min Version: TLSv1.2")
+        else:
+            # Minimal structure: extension ID 문자열 배열 (parsed from JA3)
+            print(f"  ℹ️  Extensions: ID만 포함 (상세 정보 없음, {len(extensions)}개)")
+            # ID만으로는 상세 정보 추출 불가, 기본 설정 사용
 
         # 5) Extension 순서 완전 고정
         extra_fp['tls_permute_extensions'] = False  # 랜덤화 비활성화
@@ -249,12 +279,15 @@ class CustomTLSCrawler:
 
         # 6) ALPN 추출 (JA3에 포함 안 됨 - 별도 설정 필수!)
         alpn_protocols = None
-        for ext in extensions:
-            if 'application_layer_protocol' in ext.get('name', '').lower():
-                alpn_protocols = ext.get('protocols', [])
-                if alpn_protocols:
-                    print(f"  ✓ ALPN: {', '.join(alpn_protocols)}")
-                break
+        if has_extension_objects:
+            for ext in extensions:
+                ext_name = ext.get('name', '').lower()
+                if 'application_layer_protocol' in ext_name:
+                    ext_data = ext.get('data', {})
+                    alpn_protocols = ext_data.get('protocol_name_list', [])
+                    if alpn_protocols:
+                        print(f"  ✓ ALPN: {', '.join(alpn_protocols)}")
+                    break
 
         # 7) HTTP/2 priority 추출
         sent_frames = http2_data.get('sent_frames', [])

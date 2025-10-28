@@ -385,8 +385,21 @@ class DynamicCollector:
                         // 여러 가능성 시도
                         if (typeof tlsData !== 'undefined') return tlsData;
                         if (typeof data !== 'undefined') return data;
-                        // /json API 직접 호출
+
+                        // 페이지 전체 JSON 추출 (full structure with extension details)
                         try {
+                            // 1. 먼저 페이지 내 <pre> 태그나 <script> 태그에서 JSON 찾기
+                            var preElements = document.querySelectorAll('pre');
+                            for (var i = 0; i < preElements.length; i++) {
+                                try {
+                                    var json = JSON.parse(preElements[i].textContent);
+                                    if (json.tls && json.tls.cipher_suites) {
+                                        return json;
+                                    }
+                                } catch(e) {}
+                            }
+
+                            // 2. /json API는 최후의 수단 (minimal data만 포함할 수 있음)
                             var xhr = new XMLHttpRequest();
                             xhr.open('GET', '/json', false);
                             xhr.send();
@@ -414,8 +427,31 @@ class DynamicCollector:
                         print(f"[{self.device_name}]   JSON 발견: 페이지 소스")
 
                 if browserleaks_raw:
-                    # browserleaks 원본 데이터를 peet.ws 형식으로 변환
-                    if 'ja3_text' in browserleaks_raw:
+                    # browserleaks 전체 구조 확인
+                    has_full_structure = ('tls' in browserleaks_raw and
+                                         'cipher_suites' in browserleaks_raw.get('tls', {}))
+
+                    if has_full_structure:
+                        # FULL 구조: cipher_suites, extensions가 객체 배열로 제공됨
+                        print(f"[{self.device_name}]   Full structure 감지 (extension 객체 포함)")
+
+                        # browserleaks full format은 ja3/ja3_hash가 루트 레벨에 있음
+                        tls_data_with_ja3 = browserleaks_raw['tls'].copy()
+                        tls_data_with_ja3['ja3'] = browserleaks_raw.get('ja3_text', browserleaks_raw.get('ja3', ''))
+                        tls_data_with_ja3['ja3_hash'] = browserleaks_raw.get('ja3_hash', '')
+
+                        tls_info = {
+                            'tls': tls_data_with_ja3,  # TLS 데이터 + ja3/ja3_hash
+                            'http2': browserleaks_raw.get('http2', {}),
+                            'http_version': 'h2',
+                            'user_agent': browserleaks_raw.get('user_agent', ''),
+                            'browserleaks_raw': browserleaks_raw  # 원본 데이터 보존
+                        }
+
+                    elif 'ja3_text' in browserleaks_raw:
+                        # MINIMAL 구조: ja3_text만 있어서 파싱 필요
+                        print(f"[{self.device_name}]   Minimal structure 감지 (JA3 파싱 필요)")
+
                         # JA3 문자열 파싱
                         ja3_parts = browserleaks_raw['ja3_text'].split(',')
 
@@ -443,14 +479,20 @@ class DynamicCollector:
                             'user_agent': browserleaks_raw.get('user_agent', ''),
                             'browserleaks_raw': browserleaks_raw  # 원본 데이터 보존
                         }
+                    else:
+                        print(f"[{self.device_name}] ❌ TLS 정보 비정상: 알 수 없는 형식")
+                        tls_info = {}
+
+                    if tls_info:
+                        # cipher_suites 카운트 (객체 배열 또는 ID 문자열 배열)
+                        cipher_count = len(tls_info.get('tls', {}).get('cipher_suites', tls_info.get('tls', {}).get('ciphers', [])))
+                        ja3_hash = (tls_info.get('tls', {}).get('ja3_hash') or
+                                   browserleaks_raw.get('ja3_hash', 'N/A'))
 
                         print(f"[{self.device_name}] ✓ TLS 정보 수집 완료")
-                        print(f"[{self.device_name}]   Ciphers: {len(tls_info['tls']['ciphers'])}개")
-                        print(f"[{self.device_name}]   JA3: {tls_info['tls']['ja3_hash']}")
-                        print(f"[{self.device_name}]   HTTP Version: {tls_info['http_version']}")
-                    else:
-                        print(f"[{self.device_name}] ❌ TLS 정보 비정상: ja3_text 필드 누락")
-                        tls_info = {}
+                        print(f"[{self.device_name}]   Ciphers: {cipher_count}개")
+                        print(f"[{self.device_name}]   JA3 Hash: {ja3_hash}")
+                        print(f"[{self.device_name}]   HTTP Version: {tls_info.get('http_version', 'N/A')}")
                 else:
                     print(f"[{self.device_name}] ❌ TLS 데이터를 찾을 수 없음")
                     tls_info = {}

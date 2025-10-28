@@ -73,11 +73,19 @@ def load_fingerprint_data(device_name, browser, os_version, worker_id=None):
     with open(tls_file, 'r', encoding='utf-8') as f:
         data['tls'] = json.load(f)
 
-    # TLS 정보 검증 (browserleaks 형식 지원)
-    if not data['tls'].get('ciphers') and not data['tls'].get('tls', {}).get('ciphers'):
+    # TLS 정보 검증 (browserleaks full/minimal 형식 모두 지원)
+    # Full format: data['tls']['tls']['cipher_suites']
+    # Minimal format: data['tls']['tls']['ciphers']
+    # Browserleaks root: data['tls']['ciphers'] or data['tls']['cipher_suites']
+    has_ciphers = (data['tls'].get('ciphers') or
+                   data['tls'].get('cipher_suites') or
+                   data['tls'].get('tls', {}).get('ciphers') or
+                   data['tls'].get('tls', {}).get('cipher_suites'))
+
+    if not has_ciphers:
         raise ValueError(
             f"\n❌ TLS 정보가 비정상적입니다.\n"
-            f"   필수 필드(ciphers)가 없습니다.\n"
+            f"   필수 필드(ciphers/cipher_suites)가 없습니다.\n"
             f"   디바이스를 다시 선택하여 TLS 정보를 재수집하세요.\n"
         )
 
